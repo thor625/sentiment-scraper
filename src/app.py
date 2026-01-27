@@ -54,12 +54,27 @@ def create_app():
     app = Flask(__name__)
 
     # Local default: SQLite file in project root
-    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "app.sqlite3")
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{db_path}")
+    # Determine database path
+    project_root = os.path.dirname(os.path.dirname(__file__))
+
+    # On Heroku, use /tmp (ephemeral but writable)
+    if os.getenv("DYNO"):
+        db_path = "/tmp/app.sqlite3"
+    else:
+        db_path = os.path.join(project_root, "app.sqlite3")
+
+    db_uri = os.getenv("DATABASE_URL")
+    if db_uri and db_uri.startswith("postgres://"):
+        db_uri = db_uri.replace("postgres://", "postgresql://", 1)
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = db_uri or f"sqlite:///{db_path}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     db.init_app(app)
     migrate.init_app(app, db)
+
+    with app.app_context():
+        db.create_all()
 
     @app.route("/")
     def main():
