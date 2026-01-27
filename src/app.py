@@ -5,8 +5,8 @@ from datetime import datetime
 import requests
 from flask import Flask, request
 
-from src.db import db, migrate
-from src.models import StockQuote
+from .db import db, migrate
+from .models import StockQuote
 
 
 STOOQ_URL = "https://stooq.com/q/l/"
