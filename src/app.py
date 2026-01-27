@@ -30,11 +30,14 @@ def fetch_quote(symbol: str):
     fields = data.split(",")
 
     # fields: Symbol,Date,Time,Open,High,Low,Close,Volume
+    def is_missing(x: str) -> bool:
+        return x is None or x.strip() in {"", "N/A", "N/D", "NA", "ND"}
+
     def to_float(x):
-        return None if x == "N/A" else float(x)
+        return None if is_missing(x) else float(x)
 
     def to_int(x):
-        return None if x == "N/A" else int(float(x))
+        return None if is_missing(x) else int(float(x))
 
     return {
         "symbol": fields[0],
