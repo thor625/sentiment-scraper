@@ -2,58 +2,31 @@ name: CI + Deploy to Heroku
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # Figure out whether the app lives at repo-root or in ./Sentiment_Scraper
-      - name: Determine working directory
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          WORKDIR=""
-          if [ -f "requirements.txt" ]; then
-            WORKDIR="."
-          elif [ -f "Sentiment_Scraper/requirements.txt" ]; then
-            WORKDIR="Sentiment_Scraper"
-          else
-            echo "ERROR: Could not find requirements.txt" >&2
-            ls -la
-            exit 1
-          fi
-
-          echo "WORKDIR=$WORKDIR" >> "$GITHUB_ENV"
-          echo "Using WORKDIR=$WORKDIR"
-
       - name: Install dependencies
-        shell: bash
         run: |
-          set -euo pipefail
-          cd "$WORKDIR"
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          # Helpful debug output
-          python -m pip --version
-          python -m pip show pytest
 
-      - name: Run unit tests
-        shell: bash
+      - name: Run tests
         run: |
-          set -euo pipefail
-          cd "$WORKDIR"
           python -m pytest -q
+
+      - name: Install Heroku CLI
+        run: |
+          curl https://cli-assets.heroku.com/install.sh | sh
 
       - name: Deploy to Heroku
         uses: akhileshns/heroku-deploy@v3.13.15
@@ -61,7 +34,3 @@ jobs:
           heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
           heroku_app_name: ${{ secrets.HEROKU_APP_NAME }}
           heroku_email: ${{ secrets.HEROKU_EMAIL }}
-          usedocker: false
-          # If your Procfile/requirements/runtime live in a subfolder, deploy that folder.
-          # If everything is at repo-root, WORKDIR is '.' and this is effectively a no-op.
-          appdir: ${{ env.WORKDIR }}
