@@ -17,7 +17,14 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
+          echo "PWD=$(pwd)"
+          ls -la
+          echo "--- requirements.txt (if present) ---"
+          if [ -f requirements.txt ]; then sed -n '1,200p' requirements.txt; else echo "requirements.txt not found"; fi
           python -m pip install -r requirements.txt
+          # Ensure pytest is present even if requirements.txt is missing it
+          python -m pip install -U pytest
+          python -m pip show pytest
 
       - name: Run tests
         run: |
