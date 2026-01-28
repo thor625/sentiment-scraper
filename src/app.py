@@ -363,13 +363,21 @@ def create_app():
         if not resolved_full:
             return "Missing symbol. Go back and enter one.", 400
 
-        # enqueue async collectors using the FULL symbol
         q = get_queue()
-        job = q.enqueue(run_collectors_task, resolved_full)
 
-        # send user to report (report will handle canonical vs stooq symbol internally)
-        return redirect(f"/report?symbol={url_quote(resolved_full)}&job_id={job.id}")
-    
+        # If Redis/RQ is configured, enqueue. Otherwise run inline.
+        if q is not None:
+            try:
+                job = q.enqueue(run_collectors_task, resolved_full)
+                return redirect(f"/report?symbol={url_quote(resolved_full)}&job_id={job.id}")
+            except Exception:
+                # Redis down / misconfigured -> fallback to synchronous
+                pass
+
+        # Fallback: run immediately (no job_id)
+        run_collectors_task(resolved_full)
+        return redirect(f"/report?symbol={url_quote(resolved_full)}")
+        
     @app.before_request
     def before():
         g.start_time = time.time()
