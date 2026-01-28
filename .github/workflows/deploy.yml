@@ -2,8 +2,7 @@ name: CI + Deploy to Heroku
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   test-and-deploy:
@@ -18,31 +17,42 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      # Figure out whether the app lives at repo-root or in ./Sentiment_Scraper
+      - name: Determine working directory
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          # Support either repo-root or ./Sentiment_Scraper layout
-          if [ -f "Sentiment_Scraper/requirements.txt" ]; then
-            cd Sentiment_Scraper
+          WORKDIR=""
+          if [ -f "requirements.txt" ]; then
+            WORKDIR="."
+          elif [ -f "Sentiment_Scraper/requirements.txt" ]; then
+            WORKDIR="Sentiment_Scraper"
+          else
+            echo "ERROR: Could not find requirements.txt" >&2
+            ls -la
+            exit 1
           fi
 
+          echo "WORKDIR=$WORKDIR" >> "$GITHUB_ENV"
+          echo "Using WORKDIR=$WORKDIR"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-
-          # Sanity checks (helps debug missing-pytest issues)
+          # Helpful debug output
           python -m pip --version
-          python -m pip show pytest || true
+          python -m pip show pytest
 
       - name: Run unit tests
+        shell: bash
         run: |
-          set -euxo pipefail
-
-          # Run tests from the same working directory as requirements install
-          if [ -f "Sentiment_Scraper/requirements.txt" ]; then
-            cd Sentiment_Scraper
-          fi
-
+          set -euo pipefail
+          cd "$WORKDIR"
           python -m pytest -q
 
       - name: Deploy to Heroku
@@ -52,3 +62,6 @@ jobs:
           heroku_app_name: ${{ secrets.HEROKU_APP_NAME }}
           heroku_email: ${{ secrets.HEROKU_EMAIL }}
           usedocker: false
+          # If your Procfile/requirements/runtime live in a subfolder, deploy that folder.
+          # If everything is at repo-root, WORKDIR is '.' and this is effectively a no-op.
+          appdir: ${{ env.WORKDIR }}
