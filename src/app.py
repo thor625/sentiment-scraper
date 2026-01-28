@@ -5,9 +5,13 @@ from datetime import datetime, timedelta, timezone
 import requests
 import subprocess
 import sys
-from flask import Flask, request, jsonify, redirect, Response
+from flask import Flask, request, jsonify, redirect, Response, g
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sqlalchemy import func
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from rq.job import Job
+from urllib.parse import quote as url_quote
+
 
 
 from .db import db, migrate
@@ -15,7 +19,6 @@ from .models import StockQuote, SocialMention
 from .pages import home_page_html, report_page_html
 from .queue import get_queue
 from .tasks import run_collectors_task
-from rq.job import Job
 from .queue import get_redis_conn
 
 
@@ -23,6 +26,10 @@ from .queue import get_redis_conn
 
 STOOQ_URL = "https://stooq.com/q/l/"
 APP_START = time.time()
+REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"])
+REQUEST_LATENCY = Histogram("http_request_latency_seconds", "Request latency", ["endpoint"])
+REQUESTS_TOTAL = 0
+ERRORS_TOTAL = 0
 
 sentiment_analyzer = SentimentIntensityAnalyzer()
 
@@ -186,19 +193,20 @@ def create_app():
     @app.route("/report")
     def report():
         user_input = (request.args.get("symbol") or "").strip()
-        resolved = resolve_symbol(user_input).split(".")[0]
-        if not resolved:
-            return """
-            <p>Missing symbol. Try: <a href="/report?symbol=aapl">/report?symbol=aapl</a></p>
-            """
+        resolved_full = resolve_symbol(user_input)        # full (keeps suffix)
+        canonical = resolved_full.split(".")[0]           # for SocialMention.symbol
+
+        if not canonical:
+            return '<p>Missing symbol. Try: <a href="/report?symbol=aapl">/report?symbol=aapl</a></p>'
 
         since = datetime.utcnow() - timedelta(days=1)
 
-        # Count + average sentiment (news only)
+        resolved = canonical
+        # news uses CANONICAL
         count = (
             db.session.query(func.count(SocialMention.id))
             .filter(SocialMention.platform == "news")
-            .filter(SocialMention.symbol == resolved)
+            .filter(SocialMention.symbol == canonical)
             .filter(SocialMention.created_at >= since)
             .scalar()
         ) or 0
@@ -206,18 +214,27 @@ def create_app():
         avg_sent = (
             db.session.query(func.avg(SocialMention.sentiment))
             .filter(SocialMention.platform == "news")
-            .filter(SocialMention.symbol == resolved)
+            .filter(SocialMention.symbol == canonical)
             .filter(SocialMention.created_at >= since)
             .scalar()
         )
 
         recent = (
             SocialMention.query
-            .filter_by(platform="news", symbol=resolved)
+            .filter_by(platform="news", symbol=canonical)
             .filter(SocialMention.created_at >= since)
             .order_by(SocialMention.created_at.desc())
             .limit(25)
             .all()
+        )
+
+        # quotes use STOOQ SYMBOL
+        stooq_symbol = to_stooq_symbol(resolved_full)
+        latest_quote = (
+            StockQuote.query
+            .filter_by(symbol=stooq_symbol)
+            .order_by(StockQuote.fetched_at.desc())
+            .first()
         )
 
         # Sentiment buckets (VADER compound)
@@ -341,66 +358,70 @@ def create_app():
 
     @app.route("/track", methods=["POST"])
     def track():
-        user_input = request.form.get("symbol", "")
-        resolved_full = resolve_symbol(user_input)          # could be AAPL or 000651.SZ
-        canonical = resolved_full.split(".")[0]             # AAPL or 000651
-        if not canonical:
+        user_input = (request.form.get("symbol") or "").strip()
+
+        # Resolve ONCE
+        resolved_full = resolve_symbol(user_input)   # e.g. "AMD" or "AMD.US" or "000651.SZ"
+        if not resolved_full:
             return "Missing symbol. Go back and enter one.", 400
 
-        stooq_symbol = to_stooq_symbol(resolved_full)       # keeps suffix if present, else adds .US
-        resolved = resolve_symbol(user_input).split(".")[0]
-        if not resolved:
-            return "Missing symbol. Go back and enter one.", 400
+        # enqueue async collectors using the FULL symbol
+        q = get_queue()
+        job = q.enqueue(run_collectors_task, resolved_full)
 
-        # Run collectors (quote + news)
-        status = run_collectors(resolved)
+        # send user to report (report will handle canonical vs stooq symbol internally)
+        return redirect(f"/report?symbol={url_quote(resolved_full)}&job_id={job.id}")
+    
+    @app.before_request
+    def before():
+        g.start_time = time.time()
 
-        # If both failed, show a friendly error
-        if status["fetch_quote"] != 0 and status["fetch_news_gdelt"] != 0:
-            return f"""
-            <h3>Collection failed</h3>
-            <pre>{status}</pre>
-            <p><a href="/">Back</a></p>
-            """, 500
+    @app.after_request
+    def after(response):
+        global REQUESTS_TOTAL, ERRORS_TOTAL
 
-        # Go straight to report
-        return redirect(f"/report?symbol={resolved}")
+        REQUESTS_TOTAL += 1
+        if response.status_code >= 500:
+            ERRORS_TOTAL += 1
+
+        # Prometheus client metrics
+        try:
+            endpoint = request.path
+            REQUEST_COUNT.labels(request.method, endpoint, str(response.status_code)).inc()
+            dt = time.time() - g.start_time
+            REQUEST_LATENCY.labels(endpoint).observe(dt)
+        except Exception:
+            pass
+
+        return response
     
     @app.route("/metrics")
     def metrics():
-        # super simple "Prometheus-ish" text format
-        # (no dependency needed)
-        quotes_total = db.session.query(func.count(StockQuote.id)).scalar() or 0
-        mentions_total = db.session.query(func.count(SocialMention.id)).scalar() or 0
-        news_total = (
-            db.session.query(func.count(SocialMention.id))
-            .filter(SocialMention.platform == "news")
-            .scalar()
-        ) or 0
-
-        uptime_seconds = int(time.time() - APP_START)
-
-        body = "\n".join([
-            f"app_uptime_seconds {uptime_seconds}",
-            f"quotes_total {quotes_total}",
-            f"mentions_total {mentions_total}",
-            f"news_mentions_total {news_total}",
-        ]) + "\n"
-
-        return Response(body, mimetype="text/plain")
+        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
     
+    @app.route("/health")
+    def health():
+        return {
+            "status": "ok",
+            "uptime_seconds": int(time.time() - APP_START),
+            "db": "ok"
+        }
+    
+        
     @app.route("/api/job/<job_id>")
-    def job_status(job_id: str):
+    def api_job(job_id):
+        q = get_queue()
         try:
-            job = Job.fetch(job_id, connection=get_redis_conn())
-            return {
-                "id": job.id,
-                "status": job.get_status(),        # queued/started/finished/failed
-                "result": job.result if job.is_finished else None,
-                "error": str(job.exc_info) if job.is_failed else None,
-            }, 200
-        except Exception as e:
-            return {"error": str(e)}, 404
+            job = Job.fetch(job_id, connection=q.connection)
+        except Exception:
+            return jsonify({"status": "not_found"}), 404
+
+        return jsonify({
+            "id": job.id,
+            "status": job.get_status(),   # queued/started/finished/failed
+            "result": job.result,
+            "exc_info": job.exc_info,
+        })
 
     return app
 

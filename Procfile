@@ -1,2 +1,3 @@
 web: gunicorn src.app:app
-worker: rq worker -u $REDIS_URL sentiment-scraper
+worker: python worker.py
+release: flask db upgrade

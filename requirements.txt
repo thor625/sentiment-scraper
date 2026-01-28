@@ -24,6 +24,6 @@ urllib3==2.6.3
 vaderSentiment==3.3.2
 websocket-client==1.9.0
 Werkzeug==3.1.5
-prometheus-client==0.21.0
+prometheus-client==0.20.0
 redis==5.2.1
 rq==2.1.0
