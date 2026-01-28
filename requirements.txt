@@ -28,3 +28,4 @@ prometheus-client==0.20.0
 redis==5.2.1
 rq==2.1.0
 pytest==9.0.2
+psycopg2-binary==2.9.9
