@@ -2,15 +2,27 @@ name: CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: akhileshns/heroku-deploy@v3.13.15
+
+      # Install Heroku CLI so the deploy action can run `heroku` commands
+      - name: Install Heroku CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://cli-assets.heroku.com/install.sh | sh
+          heroku --version
+
+      - name: Deploy to Heroku
+        uses: akhileshns/heroku-deploy@v3.13.15
         with:
           heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
           heroku_app_name: ${{ secrets.HEROKU_APP_NAME }}
           heroku_email: ${{ secrets.HEROKU_EMAIL }}
+          # Prevent the action from trying to create a new app (avoids `heroku create`)
+          dontautocreate: true
+          usedocker: false
