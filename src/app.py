@@ -19,7 +19,6 @@ from .models import StockQuote, SocialMention
 from .pages import home_page_html, report_page_html
 from .queue import get_queue
 from .tasks import run_collectors_task
-from .queue import get_redis_conn
 
 
 
@@ -179,14 +178,21 @@ def create_app():
     @app.route("/collect", methods=["POST"])
     def collect():
         user_input = (request.form.get("symbol") or "").strip()
-        resolved = resolve_symbol(user_input).split(".")[0]
-        if not resolved:
+
+        # Resolve ONCE (keep suffix if provided)
+        resolved_full = resolve_symbol(user_input)  # e.g. AMD, AMD.US, 000651.SZ
+        if not resolved_full:
             return {"error": "Missing symbol"}, 400
 
-        q = get_queue()
-        job = q.enqueue(run_collectors_task, resolved)
-
-        return {"job_id": job.id, "symbol": resolved}, 202
+        # Prefer async via Redis/RQ if configured; otherwise run inline
+        try:
+            q = get_queue()
+            job = q.enqueue(run_collectors_task, resolved_full)
+            return {"job_id": job.id, "symbol": resolved_full}, 202
+        except Exception:
+            # Redis not configured / not reachable -> run synchronously
+            run_collectors_task(resolved_full)
+            return {"job_id": None, "symbol": resolved_full, "status": "ran_inline"}, 200
 
     @app.route("/report")
     def report():
@@ -226,15 +232,6 @@ def create_app():
             .all()
         )
 
-        # quotes use STOOQ SYMBOL
-        stooq_symbol = to_stooq_symbol(resolved_full)
-        latest_quote = (
-            StockQuote.query
-            .filter_by(symbol=stooq_symbol)
-            .order_by(StockQuote.fetched_at.desc())
-            .first()
-        )
-
         # Sentiment buckets (VADER compound)
         pos = 0
         neu = 0
@@ -243,9 +240,8 @@ def create_app():
         # Mentions per hour (last 24h)
         mentions_by_hour = {}  # key: "YYYY-mm-dd HH:00"
 
-        # Look up the same symbol string you store from Stooq (e.g., AMD.US, AAPL.US, 000651.SZ, etc.)
-        resolved_full = resolve_symbol(user_input)      
-        stooq_symbol = to_stooq_symbol(resolved_full)  
+        # Quotes use STOOQ symbol (keep suffix if provided, else add .US)
+        stooq_symbol = to_stooq_symbol(resolved_full)
 
         latest_quote = (
             StockQuote.query
@@ -258,7 +254,7 @@ def create_app():
         if not latest_quote:
             latest_quote = (
                 StockQuote.query
-                .filter(StockQuote.symbol.ilike(f"{resolved}%"))
+                .filter(StockQuote.symbol.ilike(f"{canonical}%"))
                 .order_by(StockQuote.fetched_at.desc())
                 .first()
             )
@@ -416,7 +412,14 @@ def create_app():
         
     @app.route("/api/job/<job_id>")
     def api_job(job_id):
-        q = get_queue()
+        try:
+            q = get_queue()
+        except Exception:
+            q = None
+
+        if q is None:
+            return jsonify({"status": "unavailable", "reason": "rq/redis not configured"}), 503
+
         try:
             job = Job.fetch(job_id, connection=q.connection)
         except Exception:
