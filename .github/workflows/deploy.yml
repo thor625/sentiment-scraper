@@ -20,11 +20,29 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euxo pipefail
+
+          # Support either repo-root or ./Sentiment_Scraper layout
+          if [ -f "Sentiment_Scraper/requirements.txt" ]; then
+            cd Sentiment_Scraper
+          fi
+
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
+
+          # Sanity checks (helps debug missing-pytest issues)
+          python -m pip --version
+          python -m pip show pytest || true
 
       - name: Run unit tests
         run: |
+          set -euxo pipefail
+
+          # Run tests from the same working directory as requirements install
+          if [ -f "Sentiment_Scraper/requirements.txt" ]; then
+            cd Sentiment_Scraper
+          fi
+
           python -m pytest -q
 
       - name: Deploy to Heroku
@@ -33,3 +51,4 @@ jobs:
           heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
           heroku_app_name: ${{ secrets.HEROKU_APP_NAME }}
           heroku_email: ${{ secrets.HEROKU_EMAIL }}
+          usedocker: false
