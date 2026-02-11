@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import requests
-import subprocess
-import sys
 from flask import Flask, request, jsonify, redirect, Response, g
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sqlalchemy import func
@@ -12,37 +10,17 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 from rq.job import Job
 from urllib.parse import quote as url_quote
 
-
-
 from .db import db, migrate
 from .models import StockQuote, SocialMention
 from .pages import home_page_html, report_page_html
 from .queue import get_queue
 from .tasks import run_collectors_task
 
-
-
-
-STOOQ_URL = "https://stooq.com/q/l/"
 APP_START = time.time()
 REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"])
 REQUEST_LATENCY = Histogram("http_request_latency_seconds", "Request latency", ["endpoint"])
-REQUESTS_TOTAL = 0
-ERRORS_TOTAL = 0
 
 sentiment_analyzer = SentimentIntensityAnalyzer()
-
-
-# Initialize once (cheap + thread-safe for this use case)
-
-def run_collectors(symbol: str) -> dict:
-    """
-    Run both collectors using the same Python environment as the web app.
-    Returns a small status dict for reporting.
-    """
-    quote_rc = subprocess.run([sys.executable, "-m", "scripts.fetch_quote", symbol]).returncode
-    news_rc  = subprocess.run([sys.executable, "-m", "scripts.fetch_news_gdelt", symbol]).returncode
-    return {"fetch_quote": quote_rc, "fetch_news_gdelt": news_rc}
 
 def sentiment_label(avg_score: float | None) -> str:
     if avg_score is None:
@@ -60,43 +38,6 @@ def score_sentiment(text: str) -> float:
     if not text:
         return 0.0
     return sentiment_analyzer.polarity_scores(text)["compound"]
-
-def fetch_quote(symbol: str):
-    params = {
-        "s": symbol.lower(),
-        "f": "sd2t2ohlcv",
-        "h": "",
-        "e": "csv",
-    }
-    response = requests.get(STOOQ_URL, params=params, timeout=10)
-    response.raise_for_status()
-
-    lines = response.text.strip().splitlines()
-    if len(lines) < 2:
-        raise ValueError("Unexpected response format from quote source")
-
-    data = lines[1]
-    fields = data.split(",")
-
-    # fields: Symbol,Date,Time,Open,High,Low,Close,Volume
-    def is_missing(x: str) -> bool:
-        return x is None or x.strip() in {"", "N/A", "N/D", "NA", "ND"}
-
-    def to_float(x):
-        return None if is_missing(x) else float(x)
-
-    def to_int(x):
-        return None if is_missing(x) else int(float(x))
-
-    return {
-        "symbol": fields[0],
-        "open": to_float(fields[3]),
-        "high": to_float(fields[4]),
-        "low": to_float(fields[5]),
-        "close": to_float(fields[6]),
-        "volume": to_int(fields[7]),
-        "fetched_at": datetime.now(timezone.utc),
-    }
 
 FINNHUB_SEARCH_URL = "https://finnhub.io/api/v1/search"
 
@@ -381,12 +322,6 @@ def create_app():
 
     @app.after_request
     def after(response):
-        global REQUESTS_TOTAL, ERRORS_TOTAL
-
-        REQUESTS_TOTAL += 1
-        if response.status_code >= 500:
-            ERRORS_TOTAL += 1
-
         # Prometheus client metrics
         try:
             endpoint = request.path

@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 import sys
-
-from scripts.fetch_quote import fetch_quote, STOOQ_URL  # only if you exposed these
-from scripts.fetch_news_gdelt import main as gdelt_main
-
-# Better: just shell out to the modules in a controlled way
 import subprocess
 
 
-def run(cmd):
+def run(cmd: list[str]) -> int:
+    """Run a command and echo it for quick debugging."""
     print("\n$ " + " ".join(cmd))
     return subprocess.run(cmd).returncode
 
